@@ -667,3 +667,529 @@ install_php() {
 install_caddy() {
 
     log "Installing Caddy..."
+
+    
+
+    # Install from official repo
+
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list 2>/dev/null
+
+    
+
+    apt-get update > /dev/null 2>&1
+
+    apt-get install -y caddy > /dev/null 2>&1
+
+}
+
+
+# Function to install MariaDB
+
+install_mariadb() {
+
+    log "Installing MariaDB..."
+
+    
+
+    apt-get install -y --no-install-recommends mariadb-server > /dev/null 2>&1
+
+    
+
+    # Secure installation (minimal)
+
+    mysql -e "DELETE FROM mysql.user WHERE User='';" 2>/dev/null || true
+
+    mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');" 2>/dev/null || true
+
+    mysql -e "DROP DATABASE IF EXISTS test;" 2>/dev/null || true
+
+    mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+
+    
+
+    # Create WordPress database
+
+    . "$CONFIG_FILE"
+
+    mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null
+
+    mysql -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';" 2>/dev/null
+
+    mysql -e "GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';" 2>/dev/null
+
+    mysql -e "FLUSH PRIVILEGES;" 2>/dev/null
+
+}
+
+
+# Function to install WordPress
+
+install_wordpress() {
+
+    log "Installing WordPress..."
+
+    
+
+    . "$CONFIG_FILE"
+
+    
+
+    # Download latest WordPress
+
+    cd /tmp
+
+    wget -q https://wordpress.org/latest.tar.gz
+
+    tar -xzf latest.tar.gz -C /var/www/
+
+    mv /var/www/wordpress "/var/www/$DOMAIN"
+
+    rm -f latest.tar.gz
+
+    
+
+    # Create wp-config.php
+
+    cd "/var/www/$DOMAIN"
+
+    
+
+    # Download wp-cli for minimal configuration
+
+    if [ ! -f /usr/local/bin/wp ]; then
+
+        curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+
+        chmod +x wp-cli.phar
+
+        mv wp-cli.phar /usr/local/bin/wp
+
+    fi
+
+    
+
+    # Configure WordPress using wp-cli
+
+    wp core config \
+
+        --dbname="$DB_NAME" \
+
+        --dbuser="$DB_USER" \
+
+        --dbpass="$DB_PASSWORD" \
+
+        --skip-check \
+
+        --quiet 2>/dev/null || {
+
+        # Fallback manual config
+
+        cp wp-config-sample.php wp-config.php
+
+        sed -i "s/database_name_here/$DB_NAME/" wp-config.php
+
+        sed -i "s/username_here/$DB_USER/" wp-config.php
+
+        sed -i "s/password_here/$DB_PASSWORD/" wp-config.php
+
+    }
+
+    
+
+    # Install WordPress
+
+    wp core install \
+
+        --url="$DOMAIN" \
+
+        --title="$WP_TITLE" \
+
+        --admin_user="$WP_ADMIN_USER" \
+
+        --admin_password="$WP_ADMIN_PASSWORD" \
+
+        --admin_email="$WP_ADMIN_EMAIL" \
+
+        --skip-email \
+
+        --quiet 2>/dev/null
+
+    
+
+    # Set permissions
+
+    chown -R www-data:www-data "/var/www/$DOMAIN"
+
+    find "/var/www/$DOMAIN" -type d -exec chmod 755 {} \;
+
+    find "/var/www/$DOMAIN" -type f -exec chmod 644 {} \;
+
+}
+
+
+# Function to configure Caddy
+
+configure_caddy() {
+
+    log "Configuring Caddy..."
+
+    
+
+    . "$CONFIG_FILE"
+
+    PHP_VERSION=$(install_php)
+
+    PHP_SOCKET="/run/php/php${PHP_VERSION}-fpm.sock"
+
+    
+
+    # Build Caddyfile
+
+    CADDYFILE="/etc/caddy/Caddyfile"
+
+    
+
+    if [ "$ENABLE_SSL" = "true" ] && [ "$DOMAIN" != "localhost" ]; then
+
+        # Production with SSL
+
+        cat > "$CADDYFILE" <<EOF
+
+# WordPress Configuration - $DOMAIN
+
+$DOMAIN {
+
+    root * /var/www/$DOMAIN
+
+    php_fastcgi unix:$PHP_SOCKET
+
+    file_server
+
+    
+
+    encode gzip
+
+    
+
+    @blocked {
+
+        path /xmlrpc.php
+
+        path /wp-config.php
+
+        path /readme.html
+
+        path /license.txt
+
+    }
+
+    respond @blocked 403
+
+}
+
+EOF
+
+    else
+
+        # Development without SSL
+
+        cat > "$CADDYFILE" <<EOF
+
+# WordPress Development - $DOMAIN
+
+:80 {
+
+    root * /var/www/$DOMAIN
+
+    php_fastcgi unix:$PHP_SOCKET
+
+    file_server
+
+}
+
+EOF
+
+    fi
+
+    
+
+    # Add reverse proxy if enabled
+
+    if [ "$REVERSE_PROXY_ENABLE" = "true" ] && [ -n "$PROXY_IP" ]; then
+
+        cat >> "$CADDYFILE" <<EOF
+
+
+# Reverse Proxy Configuration
+
+reverse_proxy $PROXY_IP:$PROXY_PORT {
+
+    header_up X-Real-IP {remote_host}
+
+}
+
+EOF
+
+    fi
+
+    
+
+    systemctl restart caddy
+
+}
+
+
+# Function to create installation summary
+
+create_summary() {
+
+    . "$CONFIG_FILE"
+
+    
+
+    SUMMARY_FILE="$INSTALL_DIR/installation-summary.txt"
+
+    
+
+    cat > "$SUMMARY_FILE" <<EOF
+
+╔══════════════════════════════════════════════╗
+
+║    WordPress Installation Summary            ║
+
+╠══════════════════════════════════════════════╣
+
+║ Installation Date: $(date '+%Y-%m-%d %H:%M:%S')
+
+║ Logo Source: $LOGO_URL
+
+╠══════════════════════════════════════════════╣
+
+║ WordPress Details:
+
+║   URL: http${ENABLE_SSL:+s}://$DOMAIN
+
+║   Admin URL: http${ENABLE_SSL:+s}://$DOMAIN/wp-admin
+
+║   Site Title: $WP_TITLE
+
+║   Admin User: $WP_ADMIN_USER
+
+║   Admin Password: $WP_ADMIN_PASSWORD
+
+║   Admin Email: $WP_ADMIN_EMAIL
+
+╠══════════════════════════════════════════════╣
+
+║ Database Details:
+
+║   Database: $DB_NAME
+
+║   Username: $DB_USER
+
+║   Password: $DB_PASSWORD
+
+╠══════════════════════════════════════════════╣
+
+║ Server Details:
+
+║   Web Server: Caddy
+
+║   PHP Version: $(php -v | head -n1 | awk '{print $2}' 2>/dev/null || echo "Not found")
+
+║   Document Root: /var/www/$DOMAIN
+
+║   Config File: $CONFIG_FILE
+
+╠══════════════════════════════════════════════╣
+
+║ Reverse Proxy: ${REVERSE_PROXY_ENABLE:-false}
+
+${PROXY_IP:+║ Proxy Endpoint: $PROXY_IP:$PROXY_PORT║}
+
+╚══════════════════════════════════════════════╝
+
+
+Quick Commands:
+
+- View logs: tail -f /var/log/wp-install.log
+
+- Restart Caddy: systemctl restart caddy
+
+- Restart PHP-FPM: systemctl restart php\$(php -v | head -n1 | awk '{print \$2}' | cut -d. -f1)-fpm
+
+- Backup: tar -czf backup.tar.gz /var/www/$DOMAIN
+
+
+Save this information securely!
+
+EOF
+
+    
+
+    # Display summary with logo
+
+    show_logo
+
+    
+
+    dialog --backtitle "WordPress Minimal Installer" \
+
+           --title "Installation Complete" \
+
+           --textbox "$SUMMARY_FILE" 25 70
+
+}
+
+
+# Function to clean up minimal installation
+
+cleanup() {
+
+    log "Cleaning up..."
+
+    apt-get autoremove -y > /dev/null 2>&1
+
+    apt-get clean > /dev/null 2>&1
+
+    rm -rf /var/lib/apt/lists/*
+
+}
+
+
+# Main installation flow
+
+main() {
+
+    # Setup logo first
+
+    setup_logo
+
+    
+
+    # Show welcome screen with logo
+
+    show_welcome || {
+
+        dialog --msgbox "Installation cancelled." 5 30
+
+        exit 0
+
+    }
+
+    
+
+    # Install dialog for GUI
+
+    install_dialog
+
+    
+
+    # Show configuration GUI
+
+    show_config_gui
+
+    
+
+    # Show progress dialog with logo in background
+
+    show_logo &
+
+    LOGO_PID=$!
+
+    
+
+    (
+
+        echo "10" ; log "Starting installation..." ; sleep 1
+
+        echo "20" ; install_deps ; sleep 1
+
+        echo "40" ; install_php ; sleep 1
+
+        echo "60" ; install_caddy ; sleep 1
+
+        echo "70" ; install_mariadb ; sleep 1
+
+        echo "80" ; install_wordpress ; sleep 1
+
+        echo "90" ; configure_caddy ; sleep 1
+
+        echo "100" ; sleep 1
+
+    ) | dialog --backtitle "WordPress Minimal Installer" \
+
+               --title "Installing Components" \
+
+               --gauge "Installing WordPress..." 10 60 0
+
+    
+
+    # Wait for logo to finish
+
+    wait $LOGO_PID 2>/dev/null || true
+
+    
+
+    # Create summary
+
+    create_summary
+
+    
+
+    # Cleanup
+
+    cleanup
+
+    
+
+    log "Installation completed successfully!"
+
+    
+
+    # Show final message with logo
+
+    show_logo
+
+    
+
+    dialog --backtitle "WordPress Minimal Installer" \
+
+           --colors \
+
+           --msgbox "\
+
+\Z1✓\Z0 Installation completed!
+
+
+\Z4Access your WordPress site:\Z0
+
+\Z2http${ENABLE_SSL:+s}://$DOMAIN\Z0
+
+
+\Z4Admin login:\Z0
+
+\Z2Username: $WP_ADMIN_USER\Z0
+
+\Z2Password: $WP_ADMIN_PASSWORD\Z0
+
+
+\Z4Configuration saved in:\Z0
+
+\Z3$CONFIG_FILE\Z0
+
+\Z4Summary saved in:\Z0
+
+\Z3$INSTALL_DIR/installation-summary.txt\Z0
+
+
+Press OK to exit." 18 65
+
+}
+
+
+# Run main function
+
+main "$@"
