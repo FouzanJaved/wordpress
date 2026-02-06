@@ -53,13 +53,13 @@ echo "Configuring Caddy..."
 sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
 ${SERVER_NAME} {
     root * ${WP_DIR}
-    php_fastcgi unix//run/php/php8.1-fpm.sock
+    php_fastcgi unix//run/php/php8.3-fpm.sock
     file_server
 }
 EOF
 
 echo "Restarting services..."
-sudo systemctl restart php8.1-fpm
+sudo systemctl restart php8.3-fpm
 sudo systemctl restart caddy
 
 echo "Allowing firewall..."
