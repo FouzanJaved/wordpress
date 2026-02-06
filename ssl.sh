@@ -4,8 +4,8 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 # ===== CONFIGURATION =====
-DOMAIN="example.com"      # Change this to your domain
-EMAIL="admin@example.com" # Change this to your email for Let's Encrypt notifications
+DOMAIN="sahmcore.com.sa"      # Change this to your domain
+EMAIL="a.saeed@sahmcore.com.sa" # Change this to your email for Let's Encrypt notifications
 WEBROOT="/var/www/html"   # Your website folder root
 # ==========================
 
